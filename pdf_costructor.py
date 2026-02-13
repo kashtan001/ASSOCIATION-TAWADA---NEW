@@ -84,6 +84,31 @@ def generate_payment_schedule_table(amount: float, months: int, annual_rate: flo
     return table_html
 
 
+def generate_mourabaha_schedule_table(total_sale_price: float, months: int) -> str:
+    """
+    График платежей для контракта Mourabaha: сумма равными частями (без процентов).
+    Колонки: Mois | Montant de l'échéance.
+    """
+    payment = round(total_sale_price / months, 2) if months else 0
+    payment_str = format_money(payment)
+    table_html = """
+<table class="c18" style="width: 100%; border-collapse: collapse; margin: 10pt 0; page-break-inside: avoid;">
+<tr class="c7">
+<td class="c4" style="border: 1pt solid #666666; padding: 5pt; text-align: center; font-weight: 700;"><span class="c3">Mois</span></td>
+<td class="c4" style="border: 1pt solid #666666; padding: 5pt; text-align: center; font-weight: 700;"><span class="c3">Montant de l'échéance</span></td>
+</tr>
+"""
+    for month in range(1, months + 1):
+        table_html += f"""
+<tr class="c7">
+<td class="c5" style="border: 1pt solid #666666; padding: 3pt; text-align: center;"><span class="c3">{month}</span></td>
+<td class="c5" style="border: 1pt solid #666666; padding: 3pt; text-align: right;"><span class="c9 c8">{payment_str} MAD</span></td>
+</tr>
+"""
+    table_html += "</table>"
+    return table_html
+
+
 def generate_signatures_table() -> str:
     """
     Генерирует две наложенные друг на друга таблицы:
@@ -178,9 +203,12 @@ def generate_contratto_pdf(data: dict) -> BytesIO:
     Returns:
         BytesIO: PDF файл в памяти
     """
-    # Рассчитываем платеж если не задан
-    if 'payment' not in data:
-        data['payment'] = monthly_payment(data['amount'], data['duration'], data['tan'])
+    # Контракт Mourabaha (Марокко): цель кредита есть — считаем без процентов
+    if data.get('credit_purpose') is not None:
+        total = data['amount'] * 1.1 + 500
+        data['payment'] = round(total / data['duration'], 2)
+    elif 'payment' not in data:
+        data['payment'] = monthly_payment(data['amount'], data['duration'], data.get('tan', 0))
     
     html = fix_html_layout('contratto')
     return _generate_pdf_with_images(html, 'contratto', data)
@@ -258,67 +286,58 @@ def _generate_pdf_with_images(html: str, template_name: str, data: dict) -> Byte
         if template_name in ['contratto', 'carta', 'garanzia', 'approvazione']:
             replacements = []
             if template_name == 'contratto':
-                # Защищаем BIC код от замены (DGZNDEFFXXX)
-                html = html.replace('DGZNDEFFXXX', 'DGZNDEFFYYY')
-                
-                replacements = [
-                    ('XXX', data['name']),  # имя клиента (первое)
-                    ('XXX', f"{format_money(data['amount'])} MAD"),  # сумма кредита
-                    ('XXX', f"{data['tan']:.2f}%"),  # TAN (С %)
-                    ('XXX', f"{data['taeg']:.2f}%"),  # TAEG (С %)
-                    ('XXX', f"{data['duration']} mois"),  # срок (с "mois")
-                    ('XXX', f"{format_money(data['payment'])} MAD"),  # платеж
-                    ('11/10/2025', format_date()),  # дата
-                    ('XXX', data['name']),  # имя в подписи
-                ]
-
-                # Пункт 6: Zahlungsplan — подстановка плейсхолдеров и таблицы
-                monthly_rate = (data['tan'] / 100) / 12
-                total_payments = data['payment'] * data['duration']
-                overpayment = total_payments - data['amount']
-
-                html = html.replace('PAYMENT_SCHEDULE_MONTHLY_RATE', f"{monthly_rate:.12f}")
-                html = html.replace('PAYMENT_SCHEDULE_MONTHLY_PAYMENT', f"{format_money(data['payment'])} MAD")
-                html = html.replace('PAYMENT_SCHEDULE_TOTAL_PAYMENTS', f"{format_money(total_payments)} MAD")
-                html = html.replace('PAYMENT_SCHEDULE_OVERPAYMENT', f"{format_money(overpayment)} MAD")
-
-                # Проверяем наличие плейсхолдера перед генерацией таблицы
-                placeholder_found = '<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->' in html
-                print(f"🔍 Плейсхолдер таблицы платежей {'✅ найден' if placeholder_found else '❌ НЕ найден'} в HTML")
-                
-                payment_schedule_table = generate_payment_schedule_table(
-                    data['amount'],
-                    data['duration'],
-                    data['tan'],
-                    data['payment'],
-                )
-                
-                if placeholder_found:
-                    html = html.replace('<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->', payment_schedule_table)
-                    print(f"📊 Таблица платежей вставлена (размер таблицы: {len(payment_schedule_table)} символов)")
+                # Контракт Mourabaha (vertrag.html): подстановка по именам плейсхолдеров
+                if data.get('credit_purpose') is not None:
+                    amount = float(data['amount'])
+                    duration = int(data['duration'])
+                    margin = round(amount * 0.10, 2)
+                    total_sale = amount + margin + 500
+                    monthly_instal = data['payment']  # уже посчитан в generate_contratto_pdf
+                    date_str = format_date()
+                    html = html.replace('CLIENT_FULL_NAME', str(data['name']))
+                    html = html.replace('CREDIT_PURPOSE', str(data['credit_purpose']))
+                    html = html.replace('CREDIT_AMOUNT_MAD', f"{format_money(amount)} MAD")
+                    html = html.replace('MOURABAHA_MARGIN_AMOUNT_MAD', f"{format_money(margin)} MAD")
+                    html = html.replace('MOURABAHA_TOTAL_SALE_PRICE_MAD', f"{format_money(total_sale)} MAD")
+                    html = html.replace('CREDIT_DURATION_MONTHS', str(duration))
+                    html = html.replace('MOURABAHA_MONTHLY_INSTALLMENT_MAD', f"{format_money(monthly_instal)} MAD")
+                    html = html.replace('PAYMENT_DEBIT_DATE', date_str)
+                    html = html.replace('CONTRACT_SIGNING_DATE', date_str)
+                    if '<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->' in html:
+                        table_html = generate_mourabaha_schedule_table(total_sale, duration)
+                        html = html.replace('<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->', table_html)
+                        print("📊 Таблица графика Mourabaha вставлена")
+                    signatures_table = generate_signatures_table()
+                    html = html.replace('<!-- SIGNATURES_TABLE_PLACEHOLDER -->', signatures_table)
+                    print("💉 Подстановки Mourabaha применены (CLIENT_FULL_NAME, CREDIT_PURPOSE, суммы, даты, таблица)")
                 else:
-                    print("⚠️  Плейсхолдер таблицы не найден - таблица НЕ будет вставлена!")
-
-                # Добавляем класс к разделу 7 для принудительного разрыва страницы
-                import re
-                # Ищем параграф с "7. Unterschriften" и ПРЕДЫДУЩУЮ пунктирную линию
-                html = re.sub(
-                    r'(<p class="c2">\s*<span class="c1">-{10,}</span>\s*</p>)(\s*<p class="c2">\s*<span class="c12 c6">7\. (?:Unterschriften|Semnături|Signatures)</span>\s*</p>)',
-                    r'<p class="c2 section-7-firme"><span class="c1">------------------------------------------</span></p>\2',
-                    html
-                )
-                print("✅ Раздел 7 'Unterschriften/Semnături' (вместе с пунктирной линией) будет начинаться с новой страницы")
-
-                # Таблица с подписями и печатью, вставляем после 7-го пункта
-                signatures_table = generate_signatures_table()
-                html = html.replace('<!-- SIGNATURES_TABLE_PLACEHOLDER -->', signatures_table)
-                print("💉 Изображения подписей внедрены через signatures_table")
-                
-                for old, new in replacements:
-                    html = html.replace(old, new, 1)  # заменяем по одному
-
-                # Восстанавливаем BIC код после замены
-                html = html.replace('DGZNDEFFYYY', 'DGZNDEFFXXX')
+                    # Старый контракт с XXX по порядку (если нет credit_purpose)
+                    html = html.replace('DGZNDEFFXXX', 'DGZNDEFFYYY')
+                    replacements = [
+                        ('XXX', data['name']),
+                        ('XXX', f"{format_money(data['amount'])} MAD"),
+                        ('XXX', f"{data.get('tan', 0):.2f}%"),
+                        ('XXX', f"{data.get('taeg', 0):.2f}%"),
+                        ('XXX', f"{data['duration']} mois"),
+                        ('XXX', f"{format_money(data['payment'])} MAD"),
+                        ('11/10/2025', format_date()),
+                        ('XXX', data['name']),
+                    ]
+                    monthly_rate = (data.get('tan', 0) / 100) / 12
+                    total_payments = data['payment'] * data['duration']
+                    overpayment = total_payments - data['amount']
+                    html = html.replace('PAYMENT_SCHEDULE_MONTHLY_RATE', f"{monthly_rate:.12f}")
+                    html = html.replace('PAYMENT_SCHEDULE_MONTHLY_PAYMENT', f"{format_money(data['payment'])} MAD")
+                    html = html.replace('PAYMENT_SCHEDULE_TOTAL_PAYMENTS', f"{format_money(total_payments)} MAD")
+                    html = html.replace('PAYMENT_SCHEDULE_OVERPAYMENT', f"{format_money(overpayment)} MAD")
+                    if '<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->' in html:
+                        html = html.replace('<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->', generate_payment_schedule_table(
+                            data['amount'], data['duration'], data.get('tan', 0), data['payment']))
+                    signatures_table = generate_signatures_table()
+                    html = html.replace('<!-- SIGNATURES_TABLE_PLACEHOLDER -->', signatures_table)
+                    for old, new in replacements:
+                        html = html.replace(old, new, 1)
+                    html = html.replace('DGZNDEFFYYY', 'DGZNDEFFXXX')
             
             elif template_name == 'carta':
                 replacements = [

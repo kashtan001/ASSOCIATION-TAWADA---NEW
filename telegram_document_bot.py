@@ -44,7 +44,7 @@ logging.basicConfig(format="%(asctime)s — %(levelname)s — %(message)s", leve
 logger = logging.getLogger(__name__)
 
 # ------------------ Состояния Conversation -------------------------------
-CHOOSING_DOC, ASK_NAME, ASK_AMOUNT, ASK_DURATION, ASK_TAN, ASK_TAEG = range(6)
+CHOOSING_DOC, ASK_NAME, ASK_AMOUNT, ASK_DURATION, ASK_CREDIT_PURPOSE, ASK_TAN, ASK_TAEG = range(7)
 
 # ---------------------- PDF-строители через API -------------------------
 def build_contratto(data: dict) -> BytesIO:
@@ -135,9 +135,27 @@ async def ask_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await update.message.reply_text(f"Ошибка создания документа: {e}")
         return await start(update, context)
     
-    # Для других документов запрашиваем TAN
+    # Для контракта (Mourabaha) запрашиваем цель кредита
+    if dt in ('/contrat', '/контракт'):
+        await update.message.reply_text("Введите цель кредита (Usage):")
+        return ASK_CREDIT_PURPOSE
+    
+    # Для карты запрашиваем TAN
     await update.message.reply_text(f"Введите TAN (%), Enter для {DEFAULT_TAN}%:")
     return ASK_TAN
+
+async def ask_credit_purpose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохраняем цель кредита и генерируем контракт Mourabaha (без TAN/TAEG)."""
+    context.user_data['credit_purpose'] = update.message.text.strip()
+    d = context.user_data
+    try:
+        buf = build_contratto(d)
+        await update.message.reply_document(InputFile(buf, f"Contrat_Mourabaha_{d['name']}.pdf"))
+    except Exception as e:
+        logger.error(f"Ошибка генерации контракта: {e}")
+        await update.message.reply_text(f"Ошибка создания документа: {e}")
+    return await start(update, context)
+
 
 async def ask_tan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     txt = update.message.text.strip()
@@ -221,6 +239,7 @@ def main():
             ASK_NAME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
             ASK_AMOUNT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
             ASK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_duration)],
+            ASK_CREDIT_PURPOSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_credit_purpose)],
             ASK_TAN:      [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_tan)],
             ASK_TAEG:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_taeg)],
         },
