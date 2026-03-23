@@ -5,6 +5,7 @@
 #   /garanzia      — письмо о гарантийном взносе
 #   /carta         — письмо о выпуске карты
 #   /approvazione  — письмо об одобрении кредита
+#   /garantie, /гарантия_марокко — письмо GARANTIE (contribution + compensatoire, Maroc)
 # -----------------------------------------------------------------------------
 # Интеграция с pdf_costructor.py API
 # -----------------------------------------------------------------------------
@@ -25,8 +26,8 @@ from pdf_costructor import (
     generate_garanzia_pdf, 
     generate_carta_pdf,
     generate_approvazione_pdf,
+    generate_lettre_garantie_pdf,
     monthly_payment,
-    format_money
 )
 
 
@@ -44,7 +45,7 @@ logging.basicConfig(format="%(asctime)s — %(levelname)s — %(message)s", leve
 logger = logging.getLogger(__name__)
 
 # ------------------ Состояния Conversation -------------------------------
-CHOOSING_DOC, ASK_NAME, ASK_AMOUNT, ASK_DURATION, ASK_CREDIT_PURPOSE, ASK_TAN, ASK_TAEG = range(7)
+CHOOSING_DOC, ASK_NAME, ASK_AMOUNT, ASK_DURATION, ASK_TAN, ASK_TAEG, ASK_COMP_COMMISSION, ASK_COMP_INDEMNITY = range(8)
 
 # ---------------------- PDF-строители через API -------------------------
 def build_contratto(data: dict) -> BytesIO:
@@ -67,10 +68,14 @@ def build_lettera_approvazione(data: dict) -> BytesIO:
     return generate_approvazione_pdf(data)
 
 
+def build_lettre_garantie(data: dict) -> BytesIO:
+    return generate_lettre_garantie_pdf(data)
+
+
 # ------------------------- Handlers -----------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    kb = [["/контракт", "/гарантия"], ["/карта", "/одобрение"]]
+    kb = [["/контракт", "/гарантия"], ["/карта", "/одобрение"], ["/garantie", "/гарантия_марокко"]]
     await update.message.reply_text(
         "Выберите документ:",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
@@ -97,9 +102,46 @@ async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             logger.error(f"Ошибка генерации garanzia: {e}")
             await update.message.reply_text(f"Ошибка создания документа: {e}")
         return await start(update, context)
+    if dt in ('/garantie', '/гарантия_марокко'):
+        context.user_data['name'] = name
+        await update.message.reply_text("Введите сумму обязательной contribution (MAD):")
+        return ASK_COMP_COMMISSION
     context.user_data['name'] = name
     await update.message.reply_text("Введите сумму (MAD):")
     return ASK_AMOUNT
+
+async def ask_comp_commission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        amt = float(update.message.text.replace('€', '').replace(',', '.').replace(' ', ''))
+    except Exception:
+        await update.message.reply_text("Неверная сумма, попробуйте снова:")
+        return ASK_COMP_COMMISSION
+    context.user_data['commission'] = round(amt, 2)
+    await update.message.reply_text("Введите сумму compensatoire / indemnité (MAD):")
+    return ASK_COMP_INDEMNITY
+
+
+async def ask_comp_indemnity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        amt = float(update.message.text.replace('€', '').replace(',', '.').replace(' ', ''))
+    except Exception:
+        await update.message.reply_text("Неверная сумма, попробуйте снова:")
+        return ASK_COMP_INDEMNITY
+    context.user_data['indemnity'] = round(amt, 2)
+    d = context.user_data
+    safe = d['name'].replace('/', '_').replace('\\', '_')[:80]
+    try:
+        buf = build_lettre_garantie({
+            'name': d['name'],
+            'commission': d['commission'],
+            'indemnity': d['indemnity'],
+        })
+        await update.message.reply_document(InputFile(buf, f"Lettre de garantie_{safe}.pdf"))
+    except Exception as e:
+        logger.error(f"Ошибка генерации lettre_garantie: {e}")
+        await update.message.reply_text(f"Ошибка создания документа: {e}")
+    return await start(update, context)
+
 
 async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
@@ -135,27 +177,9 @@ async def ask_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await update.message.reply_text(f"Ошибка создания документа: {e}")
         return await start(update, context)
     
-    # Для контракта (Mourabaha) запрашиваем цель кредита
-    if dt in ('/contrat', '/контракт'):
-        await update.message.reply_text("Введите цель кредита (Usage):")
-        return ASK_CREDIT_PURPOSE
-    
-    # Для карты запрашиваем TAN
+    # Для других документов запрашиваем TAN
     await update.message.reply_text(f"Введите TAN (%), Enter для {DEFAULT_TAN}%:")
     return ASK_TAN
-
-async def ask_credit_purpose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняем цель кредита и генерируем контракт Mourabaha (без TAN/TAEG)."""
-    context.user_data['credit_purpose'] = update.message.text.strip()
-    d = context.user_data
-    try:
-        buf = build_contratto(d)
-        await update.message.reply_document(InputFile(buf, f"Contrat_Mourabaha_{d['name']}.pdf"))
-    except Exception as e:
-        logger.error(f"Ошибка генерации контракта: {e}")
-        await update.message.reply_text(f"Ошибка создания документа: {e}")
-    return await start(update, context)
-
 
 async def ask_tan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     txt = update.message.text.strip()
@@ -235,20 +259,21 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            CHOOSING_DOC: [MessageHandler(filters.Regex(r'^(/contrat|/garantie|/carte|/approbation|/контракт|/гарантия|/карта|/одобрение)$'), choose_doc)],
+            CHOOSING_DOC: [MessageHandler(filters.Regex(r'^(/contrat|/garantie|/carte|/approbation|/контракт|/гарантия|/карта|/одобрение|/гарантия_марокко)$'), choose_doc)],
             ASK_NAME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
             ASK_AMOUNT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
             ASK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_duration)],
-            ASK_CREDIT_PURPOSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_credit_purpose)],
             ASK_TAN:      [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_tan)],
             ASK_TAEG:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_taeg)],
+            ASK_COMP_COMMISSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_comp_commission)],
+            ASK_COMP_INDEMNITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_comp_indemnity)],
         },
         fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)],
     )
     app.add_handler(conv)
 
     print("🤖 Телеграм бот запущен!")
-    print("📋 Поддерживаемые документы: /контракт, /гарантия, /карта, /одобрение (итальянские варианты тоже поддерживаются)")
+    print("📋 Документы: /контракт, /гарантия, /карта, /одобрение, /garantie, /гарантия_марокко")
     print("🔧 Использует PDF конструктор из pdf_costructor.py")
     print(f"⏱️  Таймауты увеличены до 30 сек для борьбы с TimedOut ошибками")
     print("🌐 Подключен через прокси: 185.218.1.162:1479")
