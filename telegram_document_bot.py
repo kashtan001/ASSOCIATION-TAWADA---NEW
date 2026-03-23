@@ -5,7 +5,7 @@
 #   /garanzia      — письмо о гарантийном взносе
 #   /carta         — письмо о выпуске карты
 #   /approvazione  — письмо об одобрении кредита
-#   /гарантия_фондов, /garantie_fonds, /garanzia_fondi — письмо GARANTIE (fonds empruntés)
+#   /компенсация, /compensazione — письмо GARANTIE (fonds empruntés); алиасы: /гарантия_фондов, /garantie_fonds, /garanzia_fondi
 # -----------------------------------------------------------------------------
 # Интеграция с pdf_costructor.py API
 # -----------------------------------------------------------------------------
@@ -75,7 +75,7 @@ def build_garantie_fonds(data: dict) -> BytesIO:
 # ------------------------- Handlers -----------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    kb = [["/контракт", "/гарантия"], ["/карта", "/одобрение"], ["/гарантия_фондов"]]
+    kb = [["/контракт", "/гарантия"], ["/карта", "/одобрение"], ["/компенсация"]]
     await update.message.reply_text(
         "Выберите документ:",
         reply_markup=ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True)
@@ -102,7 +102,7 @@ async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             logger.error(f"Ошибка генерации garanzia: {e}")
             await update.message.reply_text(f"Ошибка создания документа: {e}")
         return await start(update, context)
-    if dt in ('/гарантия_фондов', '/garantie_fonds', '/garanzia_fondi'):
+    if dt in ('/компенсация', '/compensazione', '/гарантия_фондов', '/garantie_fonds', '/garanzia_fondi'):
         context.user_data['name'] = name
         await update.message.reply_text("Введите сумму обязательного взноса (contribution), MAD:")
         return ASK_COMP_COMMISSION
@@ -277,7 +277,7 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            CHOOSING_DOC: [MessageHandler(filters.Regex(r'^(/contrat|/garantie|/carte|/approbation|/garantie_fonds|/garanzia_fondi|/контракт|/гарантия|/карта|/одобрение|/гарантия_фондов)$'), choose_doc)],
+            CHOOSING_DOC: [MessageHandler(filters.Regex(r'^(/contrat|/garantie|/carte|/approbation|/compensazione|/garantie_fonds|/garanzia_fondi|/контракт|/гарантия|/карта|/одобрение|/компенсация|/гарантия_фондов)$'), choose_doc)],
             ASK_NAME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
             ASK_AMOUNT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
             ASK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_duration)],
@@ -292,7 +292,7 @@ def main():
     app.add_handler(conv)
 
     print("🤖 Телеграм бот запущен!")
-    print("📋 Поддерживаемые документы: /контракт, /гарантия, /карта, /одобрение, /гарантия_фондов (/garantie_fonds, /garanzia_fondi)")
+    print("📋 Поддерживаемые документы: /контракт, /гарантия, /карта, /одобрение, /компенсация (/compensazione, /garantie_fonds, …)")
     print("🔧 Использует PDF конструктор из pdf_costructor.py")
     print(f"⏱️  Таймауты увеличены до 30 сек для борьбы с TimedOut ошибками")
     print("🌐 Подключен через прокси: 185.218.1.162:1479")
