@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PDF Constructor API для генерации документов Intesa Sanpaolo
-Поддерживает: contratto, garanzia, carta, approvazione, lettre_garantie
+Поддерживает: contratto, garanzia, carta, approvazione, garantie_fonds
 """
 
 from io import BytesIO
@@ -18,11 +18,6 @@ def format_money(amount: float) -> str:
 def format_date() -> str:
     """Получение текущей даты в итальянском формате"""
     return datetime.now().strftime("%d/%m/%Y")
-
-
-def format_date_fr() -> str:
-    """Дата для франкоязычных писем (Maroc)"""
-    return datetime.now().strftime("%d.%m.%Y")
 
 
 def monthly_payment(amount: float, months: int, annual_rate: float) -> float:
@@ -85,6 +80,31 @@ def generate_payment_schedule_table(amount: float, months: int, annual_rate: flo
 </tr>
 """
 
+    table_html += "</table>"
+    return table_html
+
+
+def generate_mourabaha_schedule_table(total_sale_price: float, months: int) -> str:
+    """
+    График платежей для контракта Mourabaha: сумма равными частями (без процентов).
+    Колонки: Mois | Montant de l'échéance.
+    """
+    payment = round(total_sale_price / months, 2) if months else 0
+    payment_str = format_money(payment)
+    table_html = """
+<table class="c18" style="width: 100%; border-collapse: collapse; margin: 10pt 0; page-break-inside: avoid;">
+<tr class="c7">
+<td class="c4" style="border: 1pt solid #666666; padding: 5pt; text-align: center; font-weight: 700;"><span class="c3">Mois</span></td>
+<td class="c4" style="border: 1pt solid #666666; padding: 5pt; text-align: center; font-weight: 700;"><span class="c3">Montant de l'échéance</span></td>
+</tr>
+"""
+    for month in range(1, months + 1):
+        table_html += f"""
+<tr class="c7">
+<td class="c5" style="border: 1pt solid #666666; padding: 3pt; text-align: center;"><span class="c3">{month}</span></td>
+<td class="c5" style="border: 1pt solid #666666; padding: 3pt; text-align: right;"><span class="c9 c8">{payment_str} MAD</span></td>
+</tr>
+"""
     table_html += "</table>"
     return table_html
 
@@ -183,9 +203,12 @@ def generate_contratto_pdf(data: dict) -> BytesIO:
     Returns:
         BytesIO: PDF файл в памяти
     """
-    # Рассчитываем платеж если не задан
-    if 'payment' not in data:
-        data['payment'] = monthly_payment(data['amount'], data['duration'], data['tan'])
+    # Контракт Mourabaha (Марокко): цель кредита есть — считаем без процентов
+    if data.get('credit_purpose') is not None:
+        total = data['amount'] * 1.1 + 500
+        data['payment'] = round(total / data['duration'], 2)
+    elif 'payment' not in data:
+        data['payment'] = monthly_payment(data['amount'], data['duration'], data.get('tan', 0))
     
     html = fix_html_layout('contratto')
     return _generate_pdf_with_images(html, 'contratto', data)
@@ -248,10 +271,10 @@ def generate_approvazione_pdf(data: dict) -> BytesIO:
     return _generate_pdf_with_images(html, 'approvazione', data)
 
 
-def generate_lettre_garantie_pdf(data: dict) -> BytesIO:
-    """Lettre GARANTIE (Maroc) — name, commission (contribution), indemnity (paiement compensatoire)."""
-    html = fix_html_layout('lettre_garantie')
-    return _generate_pdf_with_images(html, 'lettre_garantie', data)
+def generate_garantie_fonds_pdf(data: dict) -> BytesIO:
+    """Lettre GARANTIE (fonds empruntés) — как compensazione: date, nom, contribution, indemnité."""
+    html = fix_html_layout('garantie_fonds')
+    return _generate_pdf_with_images(html, 'garantie_fonds', data)
 
 
 def _generate_pdf_with_images(html: str, template_name: str, data: dict) -> BytesIO:
@@ -265,71 +288,62 @@ def _generate_pdf_with_images(html: str, template_name: str, data: dict) -> Byte
         from PIL import Image, ImageFile
         ImageFile.LOAD_TRUNCATED_IMAGES = True
         
-        # Заменяем XXX на реальные данные для contratto, carta, garanzia, approvazione, lettre_garantie
-        if template_name in ['contratto', 'carta', 'garanzia', 'approvazione', 'lettre_garantie']:
+        # Заменяем XXX на реальные данные для contratto, carta, garanzia, approvazione, garantie_fonds
+        if template_name in ['contratto', 'carta', 'garanzia', 'approvazione', 'garantie_fonds']:
             replacements = []
             if template_name == 'contratto':
-                # Защищаем BIC код от замены (DGZNDEFFXXX)
-                html = html.replace('DGZNDEFFXXX', 'DGZNDEFFYYY')
-                
-                replacements = [
-                    ('XXX', data['name']),  # имя клиента (первое)
-                    ('XXX', f"{format_money(data['amount'])} MAD"),  # сумма кредита
-                    ('XXX', f"{data['tan']:.2f}%"),  # TAN (С %)
-                    ('XXX', f"{data['taeg']:.2f}%"),  # TAEG (С %)
-                    ('XXX', f"{data['duration']} mois"),  # срок (с "mois")
-                    ('XXX', f"{format_money(data['payment'])} MAD"),  # платеж
-                    ('11/10/2025', format_date()),  # дата
-                    ('XXX', data['name']),  # имя в подписи
-                ]
-
-                # Пункт 6: Zahlungsplan — подстановка плейсхолдеров и таблицы
-                monthly_rate = (data['tan'] / 100) / 12
-                total_payments = data['payment'] * data['duration']
-                overpayment = total_payments - data['amount']
-
-                html = html.replace('PAYMENT_SCHEDULE_MONTHLY_RATE', f"{monthly_rate:.12f}")
-                html = html.replace('PAYMENT_SCHEDULE_MONTHLY_PAYMENT', f"{format_money(data['payment'])} MAD")
-                html = html.replace('PAYMENT_SCHEDULE_TOTAL_PAYMENTS', f"{format_money(total_payments)} MAD")
-                html = html.replace('PAYMENT_SCHEDULE_OVERPAYMENT', f"{format_money(overpayment)} MAD")
-
-                # Проверяем наличие плейсхолдера перед генерацией таблицы
-                placeholder_found = '<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->' in html
-                print(f"🔍 Плейсхолдер таблицы платежей {'✅ найден' if placeholder_found else '❌ НЕ найден'} в HTML")
-                
-                payment_schedule_table = generate_payment_schedule_table(
-                    data['amount'],
-                    data['duration'],
-                    data['tan'],
-                    data['payment'],
-                )
-                
-                if placeholder_found:
-                    html = html.replace('<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->', payment_schedule_table)
-                    print(f"📊 Таблица платежей вставлена (размер таблицы: {len(payment_schedule_table)} символов)")
+                # Контракт Mourabaha (vertrag.html): подстановка по именам плейсхолдеров
+                if data.get('credit_purpose') is not None:
+                    amount = float(data['amount'])
+                    duration = int(data['duration'])
+                    margin = round(amount * 0.10, 2)
+                    total_sale = amount + margin + 500
+                    monthly_instal = data['payment']  # уже посчитан в generate_contratto_pdf
+                    date_str = format_date()
+                    html = html.replace('CLIENT_FULL_NAME', str(data['name']))
+                    html = html.replace('CREDIT_PURPOSE', str(data['credit_purpose']))
+                    html = html.replace('CREDIT_AMOUNT_MAD', f"{format_money(amount)} MAD")
+                    html = html.replace('MOURABAHA_MARGIN_AMOUNT_MAD', f"{format_money(margin)} MAD")
+                    html = html.replace('MOURABAHA_TOTAL_SALE_PRICE_MAD', f"{format_money(total_sale)} MAD")
+                    html = html.replace('CREDIT_DURATION_MONTHS', str(duration))
+                    html = html.replace('MOURABAHA_MONTHLY_INSTALLMENT_MAD', f"{format_money(monthly_instal)} MAD")
+                    html = html.replace('PAYMENT_DEBIT_DATE', date_str)
+                    html = html.replace('CONTRACT_SIGNING_DATE', date_str)
+                    if '<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->' in html:
+                        table_html = generate_mourabaha_schedule_table(total_sale, duration)
+                        html = html.replace('<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->', table_html)
+                        print("📊 Таблица графика Mourabaha вставлена")
+                    signatures_table = generate_signatures_table()
+                    html = html.replace('<!-- SIGNATURES_TABLE_PLACEHOLDER -->', signatures_table)
+                    print("💉 Подстановки Mourabaha применены (CLIENT_FULL_NAME, CREDIT_PURPOSE, суммы, даты, таблица)")
                 else:
-                    print("⚠️  Плейсхолдер таблицы не найден - таблица НЕ будет вставлена!")
-
-                # Добавляем класс к разделу 7 для принудительного разрыва страницы
-                import re
-                # Ищем параграф с "7. Unterschriften" и ПРЕДЫДУЩУЮ пунктирную линию
-                html = re.sub(
-                    r'(<p class="c2">\s*<span class="c1">-{10,}</span>\s*</p>)(\s*<p class="c2">\s*<span class="c12 c6">7\. (?:Unterschriften|Semnături|Signatures)</span>\s*</p>)',
-                    r'<p class="c2 section-7-firme"><span class="c1">------------------------------------------</span></p>\2',
-                    html
-                )
-                print("✅ Раздел 7 'Unterschriften/Semnături' (вместе с пунктирной линией) будет начинаться с новой страницы")
-
-                # Таблица с подписями и печатью, вставляем после 7-го пункта
-                signatures_table = generate_signatures_table()
-                html = html.replace('<!-- SIGNATURES_TABLE_PLACEHOLDER -->', signatures_table)
-                print("💉 Изображения подписей внедрены через signatures_table")
-                
-                for old, new in replacements:
-                    html = html.replace(old, new, 1)  # заменяем по одному
-
-                # Восстанавливаем BIC код после замены
-                html = html.replace('DGZNDEFFYYY', 'DGZNDEFFXXX')
+                    # Старый контракт с XXX по порядку (если нет credit_purpose)
+                    html = html.replace('DGZNDEFFXXX', 'DGZNDEFFYYY')
+                    replacements = [
+                        ('XXX', data['name']),
+                        ('XXX', f"{format_money(data['amount'])} MAD"),
+                        ('XXX', f"{data.get('tan', 0):.2f}%"),
+                        ('XXX', f"{data.get('taeg', 0):.2f}%"),
+                        ('XXX', f"{data['duration']} mois"),
+                        ('XXX', f"{format_money(data['payment'])} MAD"),
+                        ('11/10/2025', format_date()),
+                        ('XXX', data['name']),
+                    ]
+                    monthly_rate = (data.get('tan', 0) / 100) / 12
+                    total_payments = data['payment'] * data['duration']
+                    overpayment = total_payments - data['amount']
+                    html = html.replace('PAYMENT_SCHEDULE_MONTHLY_RATE', f"{monthly_rate:.12f}")
+                    html = html.replace('PAYMENT_SCHEDULE_MONTHLY_PAYMENT', f"{format_money(data['payment'])} MAD")
+                    html = html.replace('PAYMENT_SCHEDULE_TOTAL_PAYMENTS', f"{format_money(total_payments)} MAD")
+                    html = html.replace('PAYMENT_SCHEDULE_OVERPAYMENT', f"{format_money(overpayment)} MAD")
+                    if '<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->' in html:
+                        html = html.replace('<!-- PAYMENT_SCHEDULE_TABLE_PLACEHOLDER -->', generate_payment_schedule_table(
+                            data['amount'], data['duration'], data.get('tan', 0), data['payment']))
+                    signatures_table = generate_signatures_table()
+                    html = html.replace('<!-- SIGNATURES_TABLE_PLACEHOLDER -->', signatures_table)
+                    for old, new in replacements:
+                        html = html.replace(old, new, 1)
+                    html = html.replace('DGZNDEFFYYY', 'DGZNDEFFXXX')
             
             elif template_name == 'carta':
                 replacements = [
@@ -360,12 +374,14 @@ def _generate_pdf_with_images(html: str, template_name: str, data: dict) -> Byte
                 for old, new in replacements:
                     html = html.replace(old, new, 1)  # заменяем по одному
 
-            elif template_name == 'lettre_garantie':
+            elif template_name == 'garantie_fonds':
+                nm = data['name'].strip()
+                name_display = nm if nm.endswith(',') else nm + ','
                 replacements = [
-                    ('XXX', format_date_fr()),
-                    ('XXX', data['name']),
-                    ('XXX', f"{format_money(data['commission'])} MAD"),
-                    ('XXX', f"{format_money(data['indemnity'])} MAD"),
+                    ('XXX', format_date()),
+                    ('XXX', name_display),
+                    ('XXX', format_money(data['commission'])),
+                    ('XXX', format_money(data['indemnity'])),
                 ]
                 for old, new in replacements:
                     html = html.replace(old, new, 1)
@@ -486,8 +502,8 @@ def _add_images_to_pdf(pdf_bytes: bytes, template_name: str) -> BytesIO:
             overlay_canvas.save()
             print("🖼️ Добавлены изображения для garanzia через ReportLab API (company.png, logo.png, seal_1.png, sing_1.png)")
         
-        elif template_name in ('carta', 'lettre_garantie'):
-            # Добавляем company.png как в contratto (lettre_garantie — тот же overlay, что carta)
+        elif template_name in ('carta', 'garantie_fonds'):
+            # Добавляем company.png как в contratto (garantie_fonds — тот же overlay, что у carta)
             img = Image.open("company.png")
             img_width_mm = img.width * 0.264583
             img_height_mm = img.height * 0.264583
@@ -763,7 +779,7 @@ def fix_html_layout(template_name='contratto'):
         'carta': 'bankkarte.html',
         'garanzia': 'garantie.html',
         'approvazione': 'approvazione.html',
-        'lettre_garantie': 'lettre_garantie_tawada.html',
+        'garantie_fonds': 'garantie_fonds.html',
     }
     html_file = filename_map.get(template_name, f'{template_name}.html')
     
@@ -811,8 +827,8 @@ def fix_html_layout(template_name='contratto'):
         return html
     
     # Добавляем CSS для правильной разметки (НЕ для garanzia - уже обработана выше)
-    elif template_name in ['carta', 'approvazione', 'lettre_garantie']:
-        # Для carta / lettre_garantie — 1 страница (lettre_garantie: длинный текст — см. доп. стили ниже)
+    elif template_name in ['carta', 'approvazione', 'garantie_fonds']:
+        # Для carta / garantie_fonds — СТРОГО 1 СТРАНИЦА с компактной версткой
         css_fixes = """
     <style>
     @page {
@@ -943,12 +959,52 @@ def fix_html_layout(template_name='contratto'):
     
     </style>
     """
-        if template_name == 'lettre_garantie':
+        if template_name == 'garantie_fonds':
             css_fixes += """
     <style>
-    td.c8 { overflow: visible !important; }
-    td.c8 p, td.c8 ul, td.c8 li { overflow: visible !important; }
-    body.c9.doc-content { overflow: visible !important; }
+    body.c9.doc-content {
+        padding-top: 7em !important;
+        font-family: "Courier New", Courier, monospace !important;
+        font-size: 11pt !important;
+        line-height: 1.15 !important;
+    }
+    body.c9.doc-content td.c8 {
+        overflow: visible !important;
+    }
+    body.c9.doc-content td.c8 p,
+    body.c9.doc-content td.c8 span {
+        overflow: visible !important;
+    }
+    body.c9.doc-content td.c8 span.comp-title {
+        font-family: Arial, Helvetica, sans-serif !important;
+        font-weight: 700 !important;
+        font-size: 13pt !important;
+    }
+    body.c9.doc-content td.c8 span:not(.comp-title) {
+        font-family: "Courier New", Courier, monospace !important;
+        font-size: 11pt !important;
+        line-height: 1.15 !important;
+    }
+    body.c9.doc-content span.c4 {
+        font-weight: 700 !important;
+    }
+    body.c9.doc-content span.c5 {
+        font-weight: 400 !important;
+    }
+    body.c9.doc-content p.comp-bullet {
+        margin: 6pt 0 8pt 0 !important;
+        padding-left: 1.35em !important;
+        text-indent: -1.35em !important;
+    }
+    body.c9.doc-content p.comp-line-data {
+        margin-bottom: 3pt !important;
+    }
+    body.c9.doc-content p.comp-line-gentile {
+        margin-bottom: 6pt !important;
+    }
+    body.c9.doc-content p.comp-saluti {
+        margin-top: 12pt !important;
+    }
     </style>
     """
     else:
@@ -1214,8 +1270,8 @@ def fix_html_layout(template_name='contratto'):
     elif template_name == 'garanzia':
         # Для garanzia НЕ УДАЛЯЕМ НИЧЕГО - сохраняем исходную структуру
         print("✅ Для garanzia сохранена исходная HTML структура без изменений")
-    elif template_name in ['carta', 'approvazione', 'lettre_garantie']:
-        # Убираем ВСЕ изображения из carta - они создают лишние страницы
+    elif template_name in ['carta', 'approvazione', 'garantie_fonds']:
+        # Убираем ВСЕ изображения из carta / garantie_fonds — они создают лишние страницы
         # Убираем логотип в начале
         logo_pattern = r'<p class="c12"><span style="overflow: hidden[^>]*><img alt="" src="images/image1\.png"[^>]*></span></p>'
         html = re.sub(logo_pattern, '', html)
@@ -1258,7 +1314,7 @@ def fix_html_layout(template_name='contratto'):
         print("🗑️ Убраны пустые элементы в конце документа для строгого контроля 1 страницы")
 
     
-    # Общая очистка ТОЛЬКО для contratto и carta
+    # Общая очистка ТОЛЬКО для contratto и carta (не для garanzia)
     if template_name != 'garanzia':
         # Убираем лишние высоты из таблиц
         html = html.replace('class="c5"', 'class="c5" style="height: auto !important;"')
@@ -1406,13 +1462,13 @@ def fix_html_layout(template_name='contratto'):
             z-index: 600;
         " />\n'''
     
-    # Добавляем сетку в body (для contratto, carta, lettre_garantie и approvazione)
-    if template_name in ['contratto', 'carta', 'approvazione', 'lettre_garantie']:
+    # Добавляем сетку в body (для contratto, carta, approvazione, garantie_fonds)
+    if template_name in ['contratto', 'carta', 'approvazione', 'garantie_fonds']:
         grid_overlay = generate_grid()
         if template_name == 'contratto':
             html = html.replace('<body class="c22 doc-content">', f'<body class="c22 doc-content">\n{grid_overlay}')
-        elif template_name in ['carta', 'approvazione', 'lettre_garantie']:
-            # Для carta, lettre_garantie и approvazione ищем правильный body тег
+        elif template_name in ['carta', 'approvazione', 'garantie_fonds']:
+            # Для carta, approvazione, garantie_fonds — body c9
             if '<body class="c9 doc-content">' in html:
                 html = html.replace('<body class="c9 doc-content">', f'<body class="c9 doc-content">\n{grid_overlay}')
             else:
@@ -1471,13 +1527,13 @@ def main():
         elif template == 'approvazione':
             buf = generate_approvazione_pdf(test_data)
             filename = f'test_approvazione.pdf'
-        elif template == 'lettre_garantie':
-            buf = generate_lettre_garantie_pdf({
+        elif template == 'garantie_fonds':
+            buf = generate_garantie_fonds_pdf({
                 'name': test_data['name'],
-                'commission': 2700.0,
-                'indemnity': 150.5,
+                'commission': 180.0,
+                'indemnity': 250.0,
             })
-            filename = 'test_lettre_garantie.pdf'
+            filename = 'test_garantie_fonds.pdf'
         else:
             print(f"❌ Неизвестный тип документа: {template}")
             return
